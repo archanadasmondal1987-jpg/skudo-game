@@ -1,0 +1,6 @@
+{
+  "name": "SKUDO.ZIP",
+  "description": "A minimalist flat UI Sudoku game with daytime light sky-blue theme, shooting stars background, sound synthesizer, and multiple game modes (Numbers / Letters).",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

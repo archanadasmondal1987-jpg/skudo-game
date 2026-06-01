@@ -1,0 +1,125 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Outfit:wght@400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", "Outfit", ui-sans-serif, system-ui, sans-serif;
+}
+
+@keyframes completeGlow {
+  0% {
+    background-color: #E6FDF5;
+    box-shadow: inset 0 0 0 2px #10B981, 0 0 25px rgba(16, 185, 129, 0.95);
+    transform: scale(1.05);
+    z-index: 50;
+  }
+  50% {
+    background-color: #D1FAE5;
+    box-shadow: inset 0 0 0 3px #059669, 0 0 40px rgba(16, 185, 129, 1);
+    transform: scale(1.1);
+    z-index: 50;
+  }
+  100% {
+    background-color: #FFFFFF;
+    box-shadow: inset 0 0 0 0px transparent, 0 0 0px transparent;
+    transform: scale(1);
+    z-index: 10;
+  }
+}
+
+.animate-complete-glow {
+  animation: completeGlow 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+
+@keyframes pop {
+  0% { transform: scale(0.9); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes floatConfetti {
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(120vh) rotate(720deg); opacity: 0; }
+}
+
+.animate-shake {
+  animation: shake 0.35s ease-in-out;
+}
+
+.animate-pop-in {
+  animation: pop 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-confetti {
+  animation: floatConfetti 3.5s linear forwards;
+}
+
+/* Custom styled scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* Day clouds backdrop styling */
+.sky-cloud-base {
+  background: radial-gradient(circle at top left, rgba(135,206,235,0.06), transparent 60%);
+}
+
+@keyframes logoFloat {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3.5px);
+  }
+}
+
+.animate-logo-float {
+  animation: logoFloat 4.8s ease-in-out infinite;
+}
+
+/* SIGNATURE AI RING SYSTEM KEYFRAMES and utility classes */
+@keyframes aiRingSpin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes aiRingPulse {
+  0%, 100% {
+    opacity: 0.7;
+    filter: drop-shadow(0 0 2px rgba(0, 157, 255, 0.2));
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 10px rgba(0, 180, 255, 0.45)) drop-shadow(0 0 4px rgba(216, 150, 255, 0.3));
+  }
+}
+
+.animate-ai-ring {
+  animation: aiRingSpin 10s linear infinite;
+}
+
+.animate-ai-ring-pulse {
+  animation: aiRingPulse 4s ease-in-out infinite;
+}
+
+
+
