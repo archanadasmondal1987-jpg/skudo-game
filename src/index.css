@@ -121,5 +121,36 @@
   animation: aiRingPulse 4s ease-in-out infinite;
 }
 
+/* Hide Google Translate top bar/banner */
+.goog-te-banner-frame.skiptranslate, 
+.goog-te-banner-frame,
+iframe.goog-te-banner-frame,
+.goog-te-banner {
+  display: none !important;
+}
+body {
+  top: 0px !important;
+  position: static !important;
+}
+.goog-logo-link {
+  display: none !important;
+}
+.goog-te-gadget {
+  display: none !important;
+  font-size: 0px !important;
+  color: transparent !important;
+}
+.skiptranslate {
+  font-size: inherit !important;
+}
+#goog-gt-tt {
+  display: none !important;
+}
+.goog-text-highlight {
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+
 
 

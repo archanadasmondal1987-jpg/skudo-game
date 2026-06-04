@@ -172,6 +172,10 @@ export default function ProfileSetup({ onComplete }: ProfileSetupProps) {
       email: email,
       isGoogle: isGoogleLogin,
       avatarUrl: avatarUrl || undefined,
+      lastPlayedDate: '',
+      longestStreak: 0,
+      dailyHistory: {},
+      heatmapData: Array(28).fill(0),
     };
 
     // Store in global lookup so we sync progress cleanly

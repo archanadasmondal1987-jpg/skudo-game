@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Clock,
@@ -31,10 +31,14 @@ import {
   Mic,
   MicOff,
   Send,
-  Loader2
+  Loader2,
+  Download,
+  Image,
+  X
 } from 'lucide-react';
 import { CellState, DifficultyLevel, GameMode, PlayerProfile, HistoryState, LeaderboardEntry, DailyChallenge } from '../types';
-import { generatePuzzle, initializeBoard, getCellDisplay, isValidPlacement } from '../utils/sudoku';
+import { generatePuzzle, generateVariantPuzzle, initializeBoard, getCellDisplay, isValidPlacement, localizeNumber } from '../utils/sudoku';
+import { solveSudoku } from '../utils/lensSolver';
 import { gameAudio } from '../utils/audio';
 import { ACHIEVEMENTS, getXpLevel } from '../utils/achievements';
 import { TUTORIALS } from '../utils/tutorial';
@@ -44,7 +48,7 @@ interface GameInterfaceProps {
   profile: PlayerProfile;
   initialMode: GameMode;
   initialDifficulty: DifficultyLevel;
-  initialSpecialGame?: 'daily' | 'weekly' | null;
+  initialSpecialGame?: 'daily' | 'weekly' | 'monthly' | null;
   initialBoss?: any;
   initialVariant?: string;
   onUpdateProfile: (p: PlayerProfile) => void;
@@ -72,8 +76,12 @@ export default function GameInterface({
   onExitToMenu,
 }: GameInterfaceProps) {
   // Game Setup States
-  const [mode, setMode] = useState<GameMode>(initialMode);
-  const [difficulty, setDifficulty] = useState<DifficultyLevel>(initialDifficulty);
+  const [mode, setMode] = useState<GameMode>(initialSpecialGame ? 'numbers' : initialMode);
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>(
+    initialSpecialGame 
+      ? (initialSpecialGame === 'daily' ? 'focus' : 'quantum') 
+      : initialDifficulty
+  );
   const [variant, setVariant] = useState<string>(initialVariant);
   const [boss, setBoss] = useState<any>(initialBoss);
   const [bossHealth, setBossHealth] = useState<number>(initialBoss ? initialBoss.health : 100);
@@ -108,11 +116,12 @@ export default function GameInterface({
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [micError, setMicError] = useState<string | null>(null);
+  const [coachVoice, setCoachVoice] = useState<string>(() => localStorage.getItem('skudo_coach_voice') || 'neural');
   const [aiChat, setAiChat] = useState<Array<{ sender: 'user' | 'siri'; text: string; id: string; imageUrl?: string }>>([
     {
       id: 'welcome-in-game',
       sender: 'siri',
-      text: "Hello! I'm your in-game Skudo AI, powered by Google Gemini AI. I'm now a general-purpose companion: ask me any question about any topic, or have me create and visualize stunning images directly!",
+      text: "Hello! I'm your in-game Skudo AI, powered by Google Gemini AI. I'm your logic partner: feel free to ask me any rule queries or type commands, or toggle voice mode using the microphone below!",
     }
   ]);
 
@@ -172,29 +181,45 @@ export default function GameInterface({
     const utterance = new SpeechSynthesisUtterance(cleanText);
     const voices = window.speechSynthesis.getVoices();
     
-    // Sort and prioritize high-quality neural, natural, online and premium English voices
-    const scoredVoices = voices
-      .filter(voice => voice.lang.toLowerCase().startsWith('en'))
+    const activeLang = typeof localStorage !== 'undefined' ? (localStorage.getItem('skudo_lang') || 'en') : 'en';
+    let targetLang = activeLang.toLowerCase();
+    
+    // Sort and prioritize high-quality neural, natural, online and premium voices
+    let languageVoices = voices.filter(voice => voice.lang.toLowerCase().startsWith(targetLang));
+    if (languageVoices.length === 0) {
+      languageVoices = voices.filter(voice => voice.lang.toLowerCase().startsWith('en'));
+    }
+
+    const scoredVoices = languageVoices
       .map(voice => {
         let score = 0;
         const name = voice.name.toLowerCase();
         
         // Language locale priorities (US English first, then British English, then other English)
-        if (voice.lang.includes('en-US')) score += 100;
-        else if (voice.lang.includes('en-GB') || voice.lang.includes('en-UK')) score += 80;
+        if (voice.lang.includes('en-US') || voice.lang.includes(targetLang + '-')) score += 100;
         else score += 50;
+
+        // Custom selected voice filter boost!
+        if (coachVoice === 'male') {
+          if (name.includes('david') || name.includes('george') || name.includes('mark') || name.includes('male') || name.includes('james')) {
+            score += 500;
+          }
+        } else if (coachVoice === 'female') {
+          if (name.includes('zira') || name.includes('siri') || name.includes('samantha') || name.includes('aria') || name.includes('hazel') || name.includes('female') || name.includes('karen')) {
+            score += 500;
+          }
+        } else if (coachVoice === 'neural') {
+          if (name.includes('online') || name.includes('natural') || name.includes('neural') || name.includes('google')) {
+            score += 500;
+          }
+        }
 
         // Neural/Online voices are highly lifelike - major score boost
         if (name.includes('online')) score += 300; // Edge/Chrome online neural voices
         if (name.includes('natural')) score += 250; // Apple/Google natural voices
         if (name.includes('neural')) score += 200;  // general neural
-        if (name.includes('google')) score += 150;  // Google-made Web Speech TTS (such as Google US English)
-        if (name.includes('premium')) score += 120; // Premium offline voices
-        
-        // Favorite default voice names known to sound professional and clear
-        if (name.includes('aria') || name.includes('siri') || name.includes('samantha') || name.includes('hazel') || name.includes('zira')) {
-          score += 50;
-        }
+        if (name.includes('google')) score += 150;  // Google neural
+        if (name.includes('premium')) score += 120; // Premium offline
         
         return { voice, score };
       })
@@ -204,12 +229,15 @@ export default function GameInterface({
 
     if (chosenVoice) {
       utterance.voice = chosenVoice;
+      utterance.lang = chosenVoice.lang;
+    } else {
+      utterance.lang = activeLang;
     }
     
     // Set parameters for premium clarity and steady cadence
-    // 0.95-0.97 is the sweet spot: slightly slower and highly deliberate voice articulation
+    // Slightly slower and highly deliberate voice articulation
     utterance.rate = 0.96;
-    utterance.pitch = 1.01; // Tiny lift makes the voice crisp, energetic and friendly
+    utterance.pitch = coachVoice === 'male' ? 0.95 : 1.02; // Deeper for male, crispy for neural/female
 
     utterance.onstart = () => {
       setIsSpeaking(true);
@@ -293,10 +321,19 @@ export default function GameInterface({
     gameAudio.playClick();
     handleStopSpeaking();
 
-    const userMessage = { sender: 'user' as const, text: textQuery, id: `user-${Date.now()}` };
+    // Check if prompt is requesting image visualization/creation
+    const isImageRequest = /generate\s*(an?)?\s*image|create\s*(an?)?\s*image|make\s*(an?)?\s*image|generate\s*(an?)?\s*picture|create\s*(an?)?\s*picture|make\s*(an?)?\s*picture|draw|paint|visualize|show\s*(an?)?\s*image|show\s*(an?)?\s*picture|illustration|create\s*a\s*visual|photo|sketch|render/i.test(textQuery);
+
+    const userMessage = { 
+      sender: 'user' as const, 
+      text: textQuery, 
+      id: `user-${Date.now()}`
+    };
     setAiChat(prev => [...prev, userMessage]);
     setAiQuery('');
     setAiLoading(true);
+
+    const siriMessageId = `siri-${Date.now()}`;
 
     try {
       const response = await fetch('/api/ask', {
@@ -304,23 +341,63 @@ export default function GameInterface({
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ prompt: textQuery })
+        body: JSON.stringify({ 
+          prompt: textQuery, 
+          stream: !isImageRequest,
+          lang: localStorage.getItem('skudo_lang') || 'en'
+        })
       });
 
-      const data = await response.json();
-      if (response.ok && data.text) {
-        const siriMessage = { 
-          sender: 'siri' as const, 
-          text: data.text, 
-          id: `siri-${Date.now()}`,
-          imageUrl: data.imageUrl
-        };
-        setAiChat(prev => [...prev, siriMessage]);
-        speakText(data.text);
-      } else {
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
         const errText = data.error || "Server issue encountered. Check your connection or API configuration.";
         const siriMessage = { sender: 'siri' as const, text: `⚠️ Skudo AI Error: ${errText}`, id: `siri-err-${Date.now()}` };
         setAiChat(prev => [...prev, siriMessage]);
+        return;
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (isImageRequest || contentType.includes('application/json')) {
+        const data = await response.json();
+        if (data.text || data.imageUrl) {
+          const siriMessage = { 
+            sender: 'siri' as const, 
+            text: data.text || "Generated graphic for you.", 
+            id: siriMessageId,
+            imageUrl: data.imageUrl
+          };
+          setAiChat(prev => [...prev, siriMessage]);
+          speakText(siriMessage.text);
+        }
+      } else {
+        // Stream text chunk-by-chunk for instant Q&A cognitive feedback
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error("Body reader unavailable");
+
+        const decoder = new TextDecoder();
+        let done = false;
+        let cumulativeText = "";
+
+        const placeholderMsg = {
+          sender: 'siri' as const,
+          text: "",
+          id: siriMessageId
+        };
+        setAiChat(prev => [...prev, placeholderMsg]);
+
+        while (!done) {
+          const { value, done: readerDone } = await reader.read();
+          done = readerDone;
+          if (value) {
+            const chunk = decoder.decode(value, { stream: !done });
+            cumulativeText += chunk;
+            setAiChat(prev => prev.map(msg => msg.id === siriMessageId ? { ...msg, text: cumulativeText } : msg));
+          }
+        }
+
+        if (cumulativeText) {
+          speakText(cumulativeText);
+        }
       }
     } catch (e: any) {
       console.error("Fetch API error:", e);
@@ -383,6 +460,10 @@ export default function GameInterface({
     const saved = localStorage.getItem('skudo_weekly_highscore');
     return saved ? parseInt(saved, 10) : 0;
   });
+  const [monthlyHighScore, setMonthlyHighScore] = useState<number>(() => {
+    const saved = localStorage.getItem('skudo_monthly_highscore');
+    return saved ? parseInt(saved, 10) : 0;
+  });
   const [lastPlayedDaily, setLastPlayedDaily] = useState<number>(() => {
     const saved = localStorage.getItem('skudo_last_played_daily');
     return saved ? parseInt(saved, 10) : 0;
@@ -391,8 +472,77 @@ export default function GameInterface({
     const saved = localStorage.getItem('skudo_last_played_weekly');
     return saved ? parseInt(saved, 10) : 0;
   });
-  const [activeSpecialGame, setActiveSpecialGame] = useState<'daily' | 'weekly' | null>(initialSpecialGame);
+  const [lastPlayedMonthly, setLastPlayedMonthly] = useState<number>(() => {
+    const saved = localStorage.getItem('skudo_last_played_monthly');
+    return saved ? parseInt(saved, 10) : 0;
+  });
+  const [activeSpecialGame, setActiveSpecialGame] = useState<'daily' | 'weekly' | 'monthly' | null>(initialSpecialGame);
   const [now, setNow] = useState<number>(Date.now());
+
+  const downloadCertificateFile = (tier: string, date: string, time: string, scoreVal: number, playerName: string) => {
+    const formattedTier = tier === 'daily' ? 'Daily' : tier === 'weekly' ? 'Weekly' : 'Monthly';
+    const svgContent = `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
+        <defs>
+          <radialGradient id="gold-shine" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#FFE066" />
+            <stop offset="70%" stop-color="#F5B041" />
+            <stop offset="100%" stop-color="#9A7D0A" />
+          </radialGradient>
+        </defs>
+        
+        <rect width="800" height="600" fill="#0F172A" rx="20" />
+        <rect x="20" y="20" width="760" height="560" fill="none" stroke="#1E293B" stroke-width="4" rx="16" />
+        <rect x="35" y="35" width="730" height="530" fill="#1E293B" rx="12" opacity="0.6"/>
+        <rect x="50" y="50" width="700" height="500" fill="#0A0F1D" stroke="url(#gold-shine)" stroke-width="3" rx="8" />
+        
+        <path d="M 60 90 L 60 60 L 90 60" fill="none" stroke="url(#gold-shine)" stroke-width="2" />
+        <path d="M 740 90 L 740 60 L 710 60" fill="none" stroke="url(#gold-shine)" stroke-width="2" />
+        <path d="M 60 510 L 60 540 L 90 540" fill="none" stroke="url(#gold-shine)" stroke-width="2" />
+        <path d="M 740 510 L 740 540 L 710 540" fill="none" stroke="url(#gold-shine)" stroke-width="2" />
+        
+        <text x="400" y="110" font-family="'Inter', sans-serif" font-weight="900" font-size="12" fill="#38BDF8" letter-spacing="6" text-anchor="middle">SKUDO LENS VISION CORE</text>
+        <text x="400" y="160" font-family="'Inter', sans-serif" font-weight="900" font-size="34" fill="#FFFFFF" text-anchor="middle" letter-spacing="1">CHAMPIONSHIP CERTIFICATE</text>
+        
+        <line x1="250" y1="185" x2="550" y2="185" stroke="#334155" stroke-width="1.5" />
+        
+        <text x="400" y="235" font-family="'Inter', sans-serif" font-size="14" fill="#94A3B8" text-anchor="middle">This document officially recognizes that elite player</text>
+        
+        <text x="400" y="295" font-family="'Inter', sans-serif" font-weight="900" font-size="36" fill="#F5B041" text-anchor="middle">\${playerName.toUpperCase()}</text>
+        <line x1="200" y1="315" x2="600" y2="315" stroke="url(#gold-shine)" stroke-width="2" />
+        
+        <text x="400" y="355" font-family="'Inter', sans-serif" font-size="15" fill="#E2E8F0" text-anchor="middle" font-weight="600">has successfully conquered the ultra-high stakes</text>
+        <text x="400" y="395" font-family="'Inter', sans-serif" font-weight="800" font-size="24" fill="#38BDF8" text-anchor="middle" letter-spacing="1.5">\${formattedTier.toUpperCase()} SUDOKU TOURNAMENT</text>
+        
+        <g transform="translate(100, 430)">
+          <rect x="20" y="0" width="165" height="55" fill="#111827" stroke="#1E293B" rx="8" />
+          <text x="102" y="20" font-family="'Inter', sans-serif" font-weight="700" font-size="9" fill="#64748B" text-anchor="middle" letter-spacing="1">DATE COMPLETED</text>
+          <text x="102" y="42" font-family="'Inter', sans-serif" font-weight="800" font-size="12" fill="#F8FAFC" text-anchor="middle">\${date}</text>
+          
+          <rect x="205" y="0" width="165" height="55" fill="#111827" stroke="#1E293B" rx="8" />
+          <text x="287" y="20" font-family="'Inter', sans-serif" font-weight="700" font-size="9" fill="#64748B" text-anchor="middle" letter-spacing="1">TIME TAKEN</text>
+          <text x="287" y="42" font-family="'Inter', sans-serif" font-weight="800" font-size="14" fill="#38BDF8" text-anchor="middle">\${time}</text>
+          
+          <rect x="390" y="0" width="180" height="55" fill="#111827" stroke="#1E293B" rx="8" />
+          <text x="480" y="20" font-family="'Inter', sans-serif" font-weight="700" font-size="9" fill="#64748B" text-anchor="middle" letter-spacing="1">SCORE SECURED</text>
+          <text x="480" y="42" font-family="'Inter', sans-serif" font-weight="900" font-size="14" fill="#4ADE80" text-anchor="middle">\${scoreVal} PTS</text>
+        </g>
+        
+        <circle cx="400" cy="525" r="30" fill="url(#gold-shine)" />
+        <polygon points="390,525 400,510 410,525 400,540" fill="none" stroke="#000" stroke-width="1" />
+        <path d="M 390 550 L 382 585 L 400 575 L 418 585 L 410 550 Z" fill="url(#gold-shine)" opacity="0.8"/>
+      </svg>
+    `;
+    const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const triggerLink = document.createElement('a');
+    triggerLink.href = url;
+    triggerLink.download = `Skudo_Championship_Certificate_\${formattedTier}_\${date.replace(/\\s+/g, '_')}.svg`;
+    document.body.appendChild(triggerLink);
+    triggerLink.click();
+    document.body.removeChild(triggerLink);
+    URL.revokeObjectURL(url);
+  };
 
   // Effect to backport user scores on mount or layout switch
   useEffect(() => {
@@ -459,8 +609,32 @@ export default function GameInterface({
 
   // Generate a new puzzle
   const startNewGame = (gMode = mode, gDiff = difficulty, preserveSpecial = false) => {
-    const { solved, puzzle } = generatePuzzle(gDiff);
-    const initialGrid = initializeBoard(puzzle, solved);
+    let initialGrid = null;
+    if (variant === 'lens-ocr-loaded') {
+      try {
+        const raw = localStorage.getItem('skudo_lens_loaded_digits');
+        if (raw) {
+          const loadedGrid = JSON.parse(raw);
+          if (loadedGrid && loadedGrid.length === 9) {
+            const solved = solveSudoku(loadedGrid);
+            if (solved) {
+              initialGrid = initializeBoard(loadedGrid, solved);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load custom lens board on restart", err);
+      }
+    }
+
+    if (!initialGrid) {
+      const isCustomVariant = variant && variant !== 'classic' && variant !== 'lens-ocr-loaded' && variant !== 'saved_session' && variant !== 'continue';
+      const { solved, puzzle } = isCustomVariant
+        ? generateVariantPuzzle(variant, gDiff)
+        : generatePuzzle(gDiff);
+      initialGrid = initializeBoard(puzzle, solved);
+    }
+
     setBoard(initialGrid);
     setSelectedCell(null);
     setScore(0);
@@ -519,6 +693,44 @@ export default function GameInterface({
         console.error("Failed to load saved session", err);
       }
     }
+
+    if (initialVariant === 'lens-ocr-loaded') {
+      try {
+        const raw = localStorage.getItem('skudo_lens_loaded_digits');
+        if (raw) {
+          const loadedGrid = JSON.parse(raw);
+          if (loadedGrid && loadedGrid.length === 9) {
+            const solved = solveSudoku(loadedGrid);
+            if (solved) {
+              const initialGrid = initializeBoard(loadedGrid, solved);
+              setBoard(initialGrid);
+              setSelectedCell(null);
+              setScore(0);
+              setMistakes(0);
+              setSeconds(0);
+              setHistory([]);
+              setHintsUsed(0);
+              setUndosUsed(0);
+              setErasesUsed(0);
+              setNotesMode(false);
+              setGameActive(true);
+              setEndState(null);
+              setShowEndSheet(false);
+              setIsPaused(false);
+              setGlowingRows([]);
+              setGlowingCols([]);
+              setGlowingBoxes([]);
+              prevCompletsRef.current = { rows: [], cols: [], boxes: [] };
+              gameAudio.startBackgroundMusic();
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load lens ocr puzzle on mount", err);
+      }
+    }
+
     startNewGame(mode, difficulty, true);
     return () => {
       gameAudio.stopBackgroundMusic();
@@ -876,10 +1088,44 @@ export default function GameInterface({
     const rewardXp = diffMultiplier + Math.max(0, 100 - seconds * 0.1);
     
     const xpGained = Math.round(rewardXp);
-    const updatedXp = profile.xp + xpGained;
+    const updatedXp = (profile.xp || 0) + xpGained;
     
-    // Streak check
-    const currentStreak = profile.streak + 1;
+    // Genuine accurate calendar day calculation
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const dayNum = String(today.getDate()).padStart(2, '0');
+    const todayStr = `${year}-${month}-${dayNum}`;
+
+    const updatedDailyHistory = {
+      ...(profile.dailyHistory || {}),
+      [todayStr]: true,
+    };
+
+    // Calculate continuous daily streak from actual history
+    let currentStreak = 1;
+    let checkDate = new Date();
+    while (true) {
+      checkDate.setDate(checkDate.getDate() - 1);
+      const y = checkDate.getFullYear();
+      const m = String(checkDate.getMonth() + 1).padStart(2, '0');
+      const d = String(checkDate.getDate()).padStart(2, '0');
+      const prevDateKey = `${y}-${m}-${d}`;
+      if (updatedDailyHistory[prevDateKey] === true) {
+        currentStreak += 1;
+      } else {
+        break;
+      }
+      if (currentStreak > 365) break; 
+    }
+
+    const currentLongest = profile.longestStreak || 0;
+    const longestStreak = Math.max(currentLongest, currentStreak);
+
+    // Record minutes played to actual persistent 28-day activity heatmap selector
+    const dayIndex = (today.getDate() - 1) % 28;
+    const updatedHeatmap = profile.heatmapData ? [...profile.heatmapData] : Array(28).fill(0);
+    updatedHeatmap[dayIndex] = (updatedHeatmap[dayIndex] || 0) + 15; // Log 15m for a win!
 
     // Highest score check
     const newRatingScore = Math.max(0, 1000 - seconds - mistakes * 50);
@@ -905,7 +1151,7 @@ export default function GameInterface({
       activeAchievements.push('completionist');
     }
 
-    // Record special highscores if played in daily/weekly modes
+    // Record special highscores if played in daily/weekly/monthly modes
     if (activeSpecialGame === 'daily') {
       const storedHighScore = Math.max(dailyHighScore, calculatedScore);
       setDailyHighScore(storedHighScore);
@@ -946,6 +1192,48 @@ export default function GameInterface({
           .sort((a, b) => b.score - a.score);
       });
       setLeaderboardTab('weekly');
+    } else if (activeSpecialGame === 'monthly') {
+      const storedHighScore = Math.max(monthlyHighScore, calculatedScore);
+      setMonthlyHighScore(storedHighScore);
+      localStorage.setItem('skudo_monthly_highscore', storedHighScore.toString());
+      setLeaderboardTab('weekly');
+    }
+
+    if (activeSpecialGame) {
+      // Create and store earning certificate!
+      const certId = `cert_${activeSpecialGame}_${Date.now()}`;
+      const displayDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      const displayTime = `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
+      const newCertificate = {
+        id: certId,
+        tournamentId: `skudo_tournament_${activeSpecialGame}_${new Date().toISOString().split('T')[0]}`,
+        type: activeSpecialGame,
+        date: displayDate,
+        time: displayTime,
+        score: calculatedScore,
+        playerName: profile.name || "Commander"
+      };
+
+      try {
+        const existingData = localStorage.getItem('skudo_earned_certificates');
+        const certs = existingData ? JSON.parse(existingData) : [];
+        certs.push(newCertificate);
+        localStorage.setItem('skudo_earned_certificates', JSON.stringify(certs));
+      } catch (err) {
+        console.error("Failed to write to certificate storage", err);
+      }
+
+      // Update tournament state
+      const tState = {
+        tournamentId: `skudo_tournament_${activeSpecialGame}_${new Date().toISOString().split('T')[0]}`,
+        type: activeSpecialGame,
+        hasPlayed: true,
+        isLocked: true,
+        completionStatus: "won",
+        earnedCertificateId: certId
+      };
+      localStorage.setItem(`skudo_t_state_${activeSpecialGame}`, JSON.stringify(tState));
+      localStorage.setItem(`skudo_last_played_${activeSpecialGame}`, Date.now().toString());
     }
 
     // Difficulty specific stats update
@@ -977,6 +1265,9 @@ export default function GameInterface({
       totalGames: profile.totalGames + 1,
       xp: updatedXp,
       streak: currentStreak,
+      longestStreak,
+      dailyHistory: updatedDailyHistory,
+      heatmapData: updatedHeatmap,
       highestScore,
       achievements: activeAchievements,
       totalTime: profile.totalTime + seconds,
@@ -990,6 +1281,20 @@ export default function GameInterface({
     gameAudio.playLose();
     setEndState('lose');
     setShowEndSheet(true);
+
+    if (activeSpecialGame) {
+      // Record failed state
+      const tState = {
+        tournamentId: `skudo_tournament_${activeSpecialGame}_${new Date().toISOString().split('T')[0]}`,
+        type: activeSpecialGame,
+        hasPlayed: true,
+        isLocked: true,
+        completionStatus: "lost",
+        earnedCertificateId: null
+      };
+      localStorage.setItem(`skudo_t_state_${activeSpecialGame}`, JSON.stringify(tState));
+      localStorage.setItem(`skudo_last_played_${activeSpecialGame}`, Date.now().toString());
+    }
 
     const currentStats = (profile.difficultyStats?.[difficulty] || {
       wins: 0,
@@ -1005,10 +1310,19 @@ export default function GameInterface({
       }
     };
 
+    const today = new Date();
+    const dayIndex = (today.getDate() - 1) % 28;
+    const updatedHeatmap = profile.heatmapData ? [...profile.heatmapData] : Array(28).fill(0);
+    updatedHeatmap[dayIndex] = (updatedHeatmap[dayIndex] || 0) + 10; // log 10 minutes effort even on defeat
+
+    const updatedXpLoss = Math.max(0, (profile.xp || 0) - 15); // small penalty
+
     onUpdateProfile({
       ...profile,
       totalGames: profile.totalGames + 1,
+      xp: updatedXpLoss,
       streak: 0, // broken streak on game fail
+      heatmapData: updatedHeatmap,
       difficultyStats: updatedDifficultyStatsLoss as any,
     });
   };
@@ -1280,33 +1594,35 @@ export default function GameInterface({
   // Helper mapping to check if a specific number has been fully placed correctly
   // (9 instances correctly positioned on the Sudoku board grid)
   const isNumberCompleted = (num: number): boolean => {
-    if (!board || board.length < 9) return false;
+    if (!board || board.length === 0) return false;
     let count = 0;
-    for (let r = 0; r < 9; r++) {
+    const size = board.length;
+    for (let r = 0; r < size; r++) {
       if (!board[r]) continue;
-      for (let c = 0; c < 9; c++) {
+      for (let c = 0; c < size; c++) {
         const cell = board[r][c];
         if (cell && cell.value === num && cell.value === cell.correctValue) {
           count++;
         }
       }
     }
-    return count >= 9;
+    return count >= size;
   };
 
   const getNumberFilledCount = (num: number): number => {
-    if (!board || board.length < 9) return 0;
+    if (!board || board.length === 0) return 0;
     let count = 0;
-    for (let r = 0; r < 9; r++) {
+    const size = board.length;
+    for (let r = 0; r < size; r++) {
       if (!board[r]) continue;
-      for (let c = 0; c < 9; c++) {
+      for (let c = 0; c < size; c++) {
         const cell = board[r][c];
         if (cell && cell.value === num && cell.value === cell.correctValue) {
           count++;
         }
       }
     }
-    return Math.min(count, 9);
+    return Math.min(count, size);
   };
 
   // Grid Highlights Calculator
@@ -1419,12 +1735,13 @@ export default function GameInterface({
 
   // Calculate current completion percent
   const calculateProgressPercent = () => {
-    if (!board || board.length < 9) return 0;
+    if (!board || board.length === 0) return 0;
     let placed = 0;
     let totalTargets = 0;
-    for (let r = 0; r < 9; r++) {
+    const size = board.length;
+    for (let r = 0; r < size; r++) {
       if (!board[r]) continue;
-      for (let c = 0; c < 9; c++) {
+      for (let c = 0; c < board[r].length; c++) {
         const cell = board[r][c];
         if (!cell) continue;
         if (!cell.isGiven) {
@@ -1733,19 +2050,38 @@ export default function GameInterface({
 
             {/* Board render loop with mistake shaker */}
             <div
-              className={`w-full h-full grid grid-cols-9 grid-rows-9 gap-[1.5px] bg-[#87CEEB]/45 rounded-2xl overflow-hidden transition-opacity duration-300 ${
+              className={`w-full h-full grid gap-[1.5px] bg-[#87CEEB]/45 rounded-2xl overflow-hidden transition-opacity duration-300 ${
                 isShaking ? 'animate-shake' : ''
               } ${isPaused ? 'invisible opacity-0 pointer-events-none' : 'visible opacity-100'}`}
+              style={{
+                gridTemplateColumns: `repeat(${board.length || 9}, minmax(0, 1fr))`,
+                gridTemplateRows: `repeat(${board.length || 9}, minmax(0, 1fr))`,
+              }}
               id="sudoku-interactive-board"
             >
               {board.length > 0 &&
                 board.map((rowArr, rIdx) =>
                   rowArr.map((cell, cIdx) => {
-                    const displayVal = getCellDisplay(cell.value, mode === 'letters');
+                    const displayVal = getCellDisplay(cell.value, mode === 'letters' || variant === 'wordoku');
                     
-                    // Specific border configuration matching classical Sudoku 3x3 grids
-                    const hasThickerRight = cIdx === 2 || cIdx === 5;
-                    const hasThickerBottom = rIdx === 2 || rIdx === 5;
+                    // Specific border configuration matching classical Sudoku blocks
+                    const boardSize = board.length || 9;
+                    let hasThickerRight = false;
+                    let hasThickerBottom = false;
+
+                    if (boardSize === 9) {
+                      hasThickerRight = cIdx === 2 || cIdx === 5;
+                      hasThickerBottom = rIdx === 2 || rIdx === 5;
+                    } else if (boardSize === 6) {
+                      hasThickerRight = cIdx === 2;
+                      hasThickerBottom = rIdx === 1 || rIdx === 3;
+                    } else if (boardSize === 4) {
+                      hasThickerRight = cIdx === 1;
+                      hasThickerBottom = rIdx === 1;
+                    } else if (boardSize === 16) {
+                      hasThickerRight = cIdx === 3 || cIdx === 7 || cIdx === 11;
+                      hasThickerBottom = rIdx === 3 || rIdx === 7 || rIdx === 11;
+                    }
 
                     return (
                       <button
@@ -1858,7 +2194,7 @@ export default function GameInterface({
               id="tool-undo-btn"
             >
               <span className="absolute -top-2 bg-[#009DFF] text-white font-black text-[8px] px-1.5 py-0.5 rounded-full border border-white shadow-xs tracking-wider">
-                {undosUsed}/{limits.undos}
+                {localizeNumber(`${undosUsed}/${limits.undos}`)}
               </span>
               <RotateCcw className="w-4 h-4" />
               <span>Undo</span>
@@ -1877,7 +2213,7 @@ export default function GameInterface({
               id="tool-erase-btn"
             >
               <span className="absolute -top-2 bg-[#009DFF] text-white font-black text-[8px] px-1.5 py-0.5 rounded-full border border-white shadow-xs tracking-wider">
-                {erasesUsed}/{limits.erases}
+                {localizeNumber(`${erasesUsed}/${limits.erases}`)}
               </span>
               <Eraser className="w-4 h-4" />
               <span>Erase</span>
@@ -1915,7 +2251,7 @@ export default function GameInterface({
             >
               {/* Highly visible minimalist tracker badge precisely over the top of the button */}
               <span className="absolute -top-2 bg-[#009DFF] text-white font-black text-[8px] px-1.5 py-0.5 rounded-full border border-white shadow-xs tracking-wider">
-                {hintsUsed}/{limits.hints}
+                {localizeNumber(`${hintsUsed}/${limits.hints}`)}
               </span>
               <HelpCircle className="w-4 h-4" />
               <span>Hint</span>
@@ -1924,8 +2260,14 @@ export default function GameInterface({
 
           {/* 3. Input Keyboard Numbers (with crossed-out finished digits) */}
           <div className="w-full max-w-sm md:max-w-xl bg-white/45 p-4 rounded-3xl border border-white/60 shadow-lg" id="digit-keyboard-wrapper">
-            <div className="grid grid-cols-9 gap-1.5 sm:gap-2.5" id="digit-keyboard">
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => {
+            <div 
+              className="grid gap-1.5 sm:gap-2.5" 
+              style={{
+                gridTemplateColumns: `repeat(${(board && board.length) > 9 ? 8 : (board && board.length) || 9}, minmax(0, 1fr))`
+              }}
+              id="digit-keyboard"
+            >
+              {Array.from({ length: (board && board.length) || 9 }, (_, idx) => idx + 1).map((num) => {
                 const charVal = getCellDisplay(num, mode === 'letters');
                 const isFin = isNumberCompleted(num);
                 const filledCount = getNumberFilledCount(num);
@@ -1947,7 +2289,7 @@ export default function GameInterface({
 
                     {/* Smooth, compact progress badge with absolute sizing protection to never pop out */}
                     <div className="mt-1.5 text-[8.5px] sm:text-[10px] font-mono font-black text-[#0F4C81]/80 px-1 py-0.5 rounded bg-slate-100/70 border border-slate-200/50 max-w-[95%] truncate leading-none select-none">
-                      {filledCount}/9
+                      {localizeNumber(`${filledCount}/9`)}
                     </div>
                     
                     {/* Visual completed crosses representation as required */}
@@ -2310,7 +2652,10 @@ export default function GameInterface({
                   )}
 
                   {/* Dynamic Scrollable Conversation Bubbles */}
-                  <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-2 max-h-[220px]" id="in-game-ai-conversation-scroll">
+                  <div 
+                    className="flex-1 overflow-y-auto pr-1 flex flex-col gap-2 max-h-[220px]"
+                    id="in-game-ai-conversation-scroll"
+                  >
                     {aiChat.map((msg) => (
                       <div
                         key={msg.id}
@@ -2392,7 +2737,7 @@ export default function GameInterface({
                   </div>
 
                   {/* Input Row */}
-                  <div className="flex gap-1.5 shrink-0">
+                  <div className="flex gap-1.5 shrink-0 items-center">
                     <input
                       type="text"
                       value={aiQuery}
@@ -2402,7 +2747,7 @@ export default function GameInterface({
                       }}
                       disabled={aiLoading}
                       placeholder="Ask Skudo a logic query..."
-                      className="flex-1 bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-[11px] font-semibold text-slate-700 focus:outline-none focus:border-[#4DA6FF] transition disabled:opacity-60"
+                      className="flex-1 min-w-0 bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-[11px] font-semibold text-slate-700 focus:outline-none focus:border-[#4DA6FF] transition disabled:opacity-60"
                     />
                     <button
                       onClick={() => handleSendQuery()}
@@ -2645,6 +2990,33 @@ export default function GameInterface({
                 </div>
                 <span className="text-[10px] text-[#4DA6FF] font-bold mt-1">Thank you for playing {profile.name}!</span>
               </div>
+
+              {activeSpecialGame && endState === 'win' && (
+                <div className="my-1 p-4 border border-amber-500/20 bg-amber-500/5 dark:bg-amber-500/10 rounded-2xl text-center flex flex-col items-center gap-2" id="tournament-certificate-card-earned">
+                  <div className="flex items-center gap-2">
+                    <Trophy className="w-5 h-5 text-amber-505 animate-pulse" />
+                    <span className="text-xs font-black uppercase text-amber-700 dark:text-amber-400 font-sans tracking-wide">Official Champion Certificate Secured!</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                    Your absolute logic dominance is preserved. You can now download your Official Skudo Champion Certificate.
+                  </p>
+                  <button
+                    onClick={() => {
+                      gameAudio.playClick();
+                      downloadCertificateFile(
+                        activeSpecialGame, 
+                        new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), 
+                        `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`, 
+                        score, 
+                        profile.name || "Commander"
+                      );
+                    }}
+                    className="mt-1 px-4 py-2 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white text-xs font-bold uppercase tracking-wider rounded-xl shadow-md cursor-pointer transition flex items-center gap-2"
+                  >
+                    <Download className="w-4 h-4" /> Download Digital Certificate
+                  </button>
+                </div>
+              )}
 
               {/* Primary Slide Up drawer menu option links */}
               <div className="flex flex-col sm:flex-row gap-3 w-full mt-2" id="endgame-action-list">

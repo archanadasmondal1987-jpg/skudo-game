@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Hash, 
@@ -32,7 +32,8 @@ import {
   Award,
   XCircle,
   Shield,
-  Flame
+  Flame,
+  Image
 } from 'lucide-react';
 import { GameMode, PlayerProfile } from '../types';
 import { gameAudio } from '../utils/audio';
@@ -55,11 +56,14 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [micError, setMicError] = useState<string | null>(null);
+  const [coachVoice, setCoachVoice] = useState<string>(() => localStorage.getItem('skudo_coach_voice') || 'neural');
+  const [chatInputImage, setChatInputImage] = useState<string | null>(null);
+  const [isDraggingImage, setIsDraggingImage] = useState<boolean>(false);
   const [aiChat, setAiChat] = useState<Array<{ sender: 'user' | 'siri'; text: string; id: string; imageUrl?: string }>>([
     {
       id: 'welcome',
       sender: 'siri',
-      text: "Hi! I'm Skudo AI, your smart logic companion. Now powered with Google Gemini AI capabilities, you can ask me anything from any field! Or ask me to create/generate an image (e.g. 'generate a futuristic neon sudoku card')!",
+      text: "Hi! I'm Skudo Omni AI, your smart logic companion. Now powered with Google Gemini AI capabilities, you can ask me anything from any field! Or ask me to create/generate an image (e.g. 'generate a futuristic neon sudoku card'), or drag/paste pictures to scan and solve them instantly!",
     }
   ]);
 
@@ -120,29 +124,45 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
     const utterance = new SpeechSynthesisUtterance(cleanText);
     const voices = window.speechSynthesis.getVoices();
     
-    // Sort and prioritize high-quality neural, natural, online and premium English voices
-    const scoredVoices = voices
-      .filter(voice => voice.lang.toLowerCase().startsWith('en'))
+    const activeLang = typeof localStorage !== 'undefined' ? (localStorage.getItem('skudo_lang') || 'en') : 'en';
+    let targetLang = activeLang.toLowerCase();
+    
+    // Sort and prioritize high-quality neural, natural, online and premium voices
+    let languageVoices = voices.filter(voice => voice.lang.toLowerCase().startsWith(targetLang));
+    if (languageVoices.length === 0) {
+      languageVoices = voices.filter(voice => voice.lang.toLowerCase().startsWith('en'));
+    }
+
+    const scoredVoices = languageVoices
       .map(voice => {
         let score = 0;
         const name = voice.name.toLowerCase();
         
         // Language locale priorities (US English first, then British English, then other English)
-        if (voice.lang.includes('en-US')) score += 100;
-        else if (voice.lang.includes('en-GB') || voice.lang.includes('en-UK')) score += 80;
+        if (voice.lang.includes('en-US') || voice.lang.includes(targetLang + '-')) score += 100;
         else score += 50;
+
+        // Custom selected voice filter boost!
+        if (coachVoice === 'male') {
+          if (name.includes('david') || name.includes('george') || name.includes('mark') || name.includes('male') || name.includes('james')) {
+            score += 500;
+          }
+        } else if (coachVoice === 'female') {
+          if (name.includes('zira') || name.includes('siri') || name.includes('samantha') || name.includes('aria') || name.includes('hazel') || name.includes('female') || name.includes('karen')) {
+            score += 500;
+          }
+        } else if (coachVoice === 'neural') {
+          if (name.includes('online') || name.includes('natural') || name.includes('neural') || name.includes('google')) {
+            score += 500;
+          }
+        }
 
         // Neural/Online voices are highly lifelike - major score boost
         if (name.includes('online')) score += 300; // Edge/Chrome online neural voices
         if (name.includes('natural')) score += 250; // Apple/Google natural voices
         if (name.includes('neural')) score += 200;  // general neural
-        if (name.includes('google')) score += 150;  // Google-made Web Speech TTS (such as Google US English)
-        if (name.includes('premium')) score += 120; // Premium offline voices
-        
-        // Favorite default voice names known to sound professional and clear
-        if (name.includes('aria') || name.includes('siri') || name.includes('samantha') || name.includes('hazel') || name.includes('zira')) {
-          score += 50;
-        }
+        if (name.includes('google')) score += 150;  // Google neural
+        if (name.includes('premium')) score += 120; // Premium offline
         
         return { voice, score };
       })
@@ -152,12 +172,15 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
 
     if (chosenVoice) {
       utterance.voice = chosenVoice;
+      utterance.lang = chosenVoice.lang;
+    } else {
+      utterance.lang = activeLang;
     }
     
     // Set parameters for premium clarity and steady cadence
-    // 0.95-0.97 is the sweet spot: slightly slower and highly deliberate voice articulation
+    // Slightly slower and highly deliberate voice articulation
     utterance.rate = 0.96;
-    utterance.pitch = 1.01; // Tiny lift makes the voice crisp, energetic and friendly
+    utterance.pitch = coachVoice === 'male' ? 0.95 : 1.02; // Deeper for male, crispy for neural/female
 
     utterance.onstart = () => {
       setIsSpeaking(true);
@@ -236,17 +259,91 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
     }
   };
 
+  const processChatImage = (file: File) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      setAiChat(prev => [...prev, { 
+        sender: 'siri', 
+        text: `⚠️ Attachment Error: Image file is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Please choose an image smaller than 10MB limit.`, 
+        id: `err-${Date.now()}` 
+      }]);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setChatInputImage(reader.result as string);
+      gameAudio.playClick();
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleChatImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processChatImage(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingImage(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingImage(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingImage(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      if (file.type.startsWith('image/')) {
+        processChatImage(file);
+      }
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          const file = items[i].getAsFile();
+          if (file) {
+            e.preventDefault();
+            processChatImage(file);
+            break;
+          }
+        }
+      }
+    }
+  };
+
   const handleSendQuery = async (queryToSend?: string) => {
     const textQuery = queryToSend || aiQuery;
-    if (!textQuery.trim()) return;
+    const sendingImage = chatInputImage;
+    if (!textQuery.trim() && !sendingImage) return;
 
     gameAudio.playClick();
     handleStopSpeaking();
 
-    const userMessage = { sender: 'user' as const, text: textQuery, id: `user-${Date.now()}` };
+    // Check if prompt is requesting image visualization/creation
+    const isImageRequest = !sendingImage && /generate\s*(an?)?\s*image|create\s*(an?)?\s*image|make\s*(an?)?\s*image|generate\s*(an?)?\s*picture|create\s*(an?)?\s*picture|make\s*(an?)?\s*picture|draw|paint|visualize|show\s*(an?)?\s*image|show\s*(an?)?\s*picture|illustration|create\s*a\s*visual|photo|sketch|render/i.test(textQuery);
+
+    const userMessage = { 
+      sender: 'user' as const, 
+      text: textQuery || "Scanned image attachment", 
+      id: `user-${Date.now()}`,
+      imageUrl: sendingImage || undefined 
+    };
     setAiChat(prev => [...prev, userMessage]);
     setAiQuery('');
+    setChatInputImage(null);
     setAiLoading(true);
+
+    const siriMessageId = `siri-${Date.now()}`;
 
     try {
       const response = await fetch('/api/ask', {
@@ -254,23 +351,64 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ prompt: textQuery })
+        body: JSON.stringify({ 
+          prompt: textQuery, 
+          stream: !isImageRequest,
+          image: sendingImage || undefined,
+          lang: localStorage.getItem('skudo_lang') || 'en'
+        })
       });
 
-      const data = await response.json();
-      if (response.ok && data.text) {
-        const siriMessage = { 
-          sender: 'siri' as const, 
-          text: data.text, 
-          id: `siri-${Date.now()}`,
-          imageUrl: data.imageUrl
-        };
-        setAiChat(prev => [...prev, siriMessage]);
-        speakText(data.text);
-      } else {
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
         const errText = data.error || "Server issue encountered. Check your connection or API configuration.";
         const siriMessage = { sender: 'siri' as const, text: `⚠️ Skudo AI Error: ${errText}`, id: `siri-err-${Date.now()}` };
         setAiChat(prev => [...prev, siriMessage]);
+        return;
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (isImageRequest || contentType.includes('application/json')) {
+        const data = await response.json();
+        if (data.text || data.imageUrl) {
+          const siriMessage = { 
+            sender: 'siri' as const, 
+            text: data.text || "Generated graphic for you.", 
+            id: siriMessageId,
+            imageUrl: data.imageUrl
+          };
+          setAiChat(prev => [...prev, siriMessage]);
+          speakText(siriMessage.text);
+        }
+      } else {
+        // Stream text chunk-by-chunk for instant Q&A cognitive feedback
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error("Body reader unavailable");
+
+        const decoder = new TextDecoder();
+        let done = false;
+        let cumulativeText = "";
+
+        const placeholderMsg = {
+          sender: 'siri' as const,
+          text: "",
+          id: siriMessageId
+        };
+        setAiChat(prev => [...prev, placeholderMsg]);
+
+        while (!done) {
+          const { value, done: readerDone } = await reader.read();
+          done = readerDone;
+          if (value) {
+            const chunk = decoder.decode(value, { stream: !done });
+            cumulativeText += chunk;
+            setAiChat(prev => prev.map(msg => msg.id === siriMessageId ? { ...msg, text: cumulativeText } : msg));
+          }
+        }
+
+        if (cumulativeText) {
+          speakText(cumulativeText);
+        }
       }
     } catch (e: any) {
       console.error("Fetch API error:", e);
@@ -514,6 +652,9 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
             <div className="flex flex-wrap gap-1 mt-1">
               <span className="px-1.5 py-0.5 bg-sky-50 text-[#009DFF] border border-sky-100 rounded text-[9.5px] font-black uppercase tracking-wider leading-none">
                 {profile.experience}
+              </span>
+              <span className="px-1.5 py-0.5 bg-violet-50 text-violet-600 border border-violet-100 rounded text-[9.5px] font-black uppercase tracking-wider leading-none">
+                Lvl {Math.floor((profile.xp || 0) / 250) + 1} ({profile.xp || 0} XP)
               </span>
               <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 border border-amber-100 rounded text-[9.5px] font-black uppercase tracking-wider leading-none">
                 ★ {logicRating} Rating
@@ -1191,8 +1332,23 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
 
                       {/* Right: Scrollable conversation bubble dashboard */}
                       <div className="flex-1 bg-slate-50 border border-slate-200/60 rounded-2xl p-3 flex flex-col min-h-0 h-full">
-                        {/* Messages Area */}
-                        <div className="flex-1 overflow-y-auto mb-2 pr-1 flex flex-col gap-2.5 scrollbar-thin" id="ai-chat-scroller">
+                        {/* Messages Area with drag-and-drop support */}
+                        <div 
+                          onDragOver={handleDragOver}
+                          onDragLeave={handleDragLeave}
+                          onDrop={handleDrop}
+                          className={`flex-1 overflow-y-auto mb-2 pr-1 flex flex-col gap-2.5 scrollbar-thin relative transition-all duration-200 ${
+                            isDraggingImage ? 'bg-sky-500/10 border border-dashed border-[#4DA6FF] rounded-xl p-2' : ''
+                          }`} 
+                          id="ai-chat-scroller"
+                        >
+                          {isDraggingImage && (
+                            <div className="absolute inset-0 bg-slate-900/85 backdrop-blur-xs flex flex-col items-center justify-center p-4 text-center z-50 pointer-events-none rounded-xl">
+                              <Image className="w-8 h-8 text-[#4DA6FF] animate-bounce mb-1" />
+                              <p className="text-xs font-black text-white uppercase tracking-wider">Drop Image To Scan</p>
+                              <p className="text-[10px] text-slate-300">Skudo Omni AI will analyze it instantly</p>
+                            </div>
+                          )}
                           {aiChat.map((msg) => (
                             <div
                               key={msg.id}
@@ -1274,8 +1430,50 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
                           ))}
                         </div>
 
+                        {/* Image Preview Block */}
+                        {chatInputImage && (
+                          <div className="p-1.5 rounded-xl border border-slate-200 bg-white mb-2 shrink-0 flex items-center gap-2 w-fit max-w-full transition">
+                            <div className="w-8 h-8 rounded-lg overflow-hidden border border-slate-200 shrink-0">
+                              <img src={chatInputImage} alt="Uploaded attachment" className="w-full h-full object-cover" />
+                            </div>
+                            <div className="flex-1 min-w-[80px]">
+                              <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest leading-none">Scanned</p>
+                              <p className="text-[8px] text-slate-400 truncate leading-tight font-semibold">Image attach active</p>
+                            </div>
+                            <button
+                              onClick={() => {
+                                setChatInputImage(null);
+                                gameAudio.playClick();
+                              }}
+                              className="p-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 rounded-full cursor-pointer transition"
+                              title="Clear image"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+
                         {/* Input bar */}
-                        <div className="flex gap-1.5 shrink-0">
+                        <div className="flex gap-1.5 shrink-0 items-center">
+                          {/* Image upload selector button */}
+                          <button
+                            onClick={() => {
+                              const uploadInput = document.getElementById('overlay-ai-file-upload');
+                              if (uploadInput) uploadInput.click();
+                            }}
+                            className="p-2.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-400 rounded-xl cursor-pointer transition shrink-0 flex items-center justify-center"
+                            title="Upload Image/Picture to scan"
+                          >
+                            <Image className="w-4 h-4" />
+                          </button>
+                          <input
+                            id="overlay-ai-file-upload"
+                            type="file"
+                            accept="image/*"
+                            onChange={handleChatImageUpload}
+                            className="hidden"
+                          />
+
                           <input
                             type="text"
                             value={aiQuery}
@@ -1283,13 +1481,14 @@ export default function ModeSelection({ profile, onSelect, onSelectSpecial }: Mo
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') handleSendQuery();
                             }}
+                            onPaste={handlePaste}
                             disabled={aiLoading}
-                            placeholder={isListening ? "Listening with mic..." : "Ask Skudo about Skudo rules..."}
-                            className="flex-1 bg-white border border-slate-200 px-3 py-2 rounded-xl text-[11px] font-semibold text-slate-705 focus:outline-none focus:border-[#4DA6FF] focus:ring-1 focus:ring-[#4DA6FF] transition disabled:opacity-60"
+                            placeholder={isListening ? "Listening with mic..." : "Ask Omni AI... paste/drag images!"}
+                            className="flex-1 min-w-0 bg-white border border-slate-200 px-3 py-2 rounded-xl text-[11px] font-semibold text-slate-705 focus:outline-none focus:border-[#4DA6FF] focus:ring-1 focus:ring-[#4DA6FF] transition disabled:opacity-60"
                           />
                           <button
                             onClick={() => handleSendQuery()}
-                            disabled={aiLoading || !aiQuery.trim()}
+                            disabled={aiLoading || (!aiQuery.trim() && !chatInputImage)}
                             className="p-2 bg-[#4DA6FF] hover:bg-[#3BA7FF] text-white rounded-xl shadow-xs hover:scale-[1.01] cursor-pointer active:scale-95 transition disabled:opacity-40"
                           >
                             <Send className="w-3.5 h-3.5" />

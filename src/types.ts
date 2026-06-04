@@ -34,6 +34,10 @@ export interface PlayerProfile {
   isGoogle?: boolean;
   avatarUrl?: string;
   difficultyStats?: Record<DifficultyLevel, DifficultyStats>;
+  lastPlayedDate?: string; // YYYY-MM-DD
+  longestStreak?: number;
+  dailyHistory?: Record<string, boolean>; // date -> completed status
+  heatmapData?: number[]; // list of active logged session minutes
 }
 
 export type GameMode = 'numbers' | 'letters';
